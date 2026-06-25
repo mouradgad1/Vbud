@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Activity,
-  Droplet,
   AlertTriangle,
   Play,
   Square,
@@ -16,17 +15,25 @@ import {
   CheckCircle,
   FileText,
   AlertCircle,
-  Mic,
-  MicOff
+  MessageCircle,
+  Send,
+  Phone,
+  Wrench,
+  Mic
 } from 'lucide-react';
-import { analyzeFaceImage, generateStudyReport, chatWithVbud } from './GeminiService';
+import {
+  analyzeFaceImage,
+  generateStudyReport,
+  getLeakFixInstructions,
+  chatWithVbud
+} from './GeminiService';
 
-// Standard initial data points
-const INITIAL_WATER = [4.2, 4.5, 4.3, 4.6, 4.4, 4.5, 4.8, 4.2, 4.1, 4.4, 4.6, 4.5, 4.3, 4.4, 4.5, 4.7, 4.3, 4.4, 4.6, 4.5];
-const INITIAL_GAS = [0.21, 0.23, 0.22, 0.24, 0.21, 0.22, 0.25, 0.22, 0.20, 0.23, 0.24, 0.23, 0.21, 0.22, 0.23, 0.25, 0.22, 0.23, 0.24, 0.23];
+// Initial data – normal range for water pressure (45‑65 PSI)
+const INITIAL_WATER = Array(20).fill().map(() => +(48 + Math.random() * 12).toFixed(1));
+const INITIAL_GAS = Array(20).fill().map(() => +(0.18 + Math.random() * 0.1).toFixed(2));
 
 function App() {
-  // --- Core states ---
+  // Core states
   const [activeState, setActiveState] = useState('Idle');
   const [previousState, setPreviousState] = useState('Idle');
 
@@ -37,10 +44,19 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [tempKey, setTempKey] = useState(apiKey);
 
-  // Telemetry
+  // Maintenance phone
+  const [maintenancePhone, setMaintenancePhone] = useState(
+    localStorage.getItem('vbud_maintenance_phone') || ''
+  );
+  const [tempPhone, setTempPhone] = useState(maintenancePhone);
+
+  // Pipeline telemetry
   const [waterData, setWaterData] = useState(INITIAL_WATER);
   const [gasData, setGasData] = useState(INITIAL_GAS);
-  const [isAnomaly, setIsAnomaly] = useState(false);
+  const [leakDetected, setLeakDetected] = useState(false);
+  const [leakAction, setLeakAction] = useState(null); // 'call' | 'fix' | null
+  const [leakFixInstructions, setLeakFixInstructions] = useState('');
+  const [isFetchingFix, setIsFetchingFix] = useState(false);
 
   // Biometrics
   const [heartRate, setHeartRate] = useState(72);
@@ -53,18 +69,12 @@ function App() {
   const [showEmergencyReport, setShowEmergencyReport] = useState(false);
   const [emergencyLog, setEmergencyLog] = useState([]);
 
-  // --- VOICE INTERACTION ---
-  const [isListening, setIsListening] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [fullTranscript, setFullTranscript] = useState('');
-  const [geminiResponse, setGeminiResponse] = useState('');
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [recognitionStatus, setRecognitionStatus] = useState('idle');
-  const recognitionRef = useRef(null);
-  const fullTranscriptRef = useRef('');
-  const isListeningRef = useRef(false); // ref so closures always see current value
-  const synthRef = useRef(window.speechSynthesis);
+  // Chat
+  const [showChat, setShowChat] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [chatMessages, setChatMessages] = useState([]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const chatEndRef = useRef(null);
 
   // Face Analysis
   const [selectedImage, setSelectedImage] = useState(null);
@@ -79,12 +89,14 @@ function App() {
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [studyReport, setStudyReport] = useState('');
   const [hrSamples, setHrSamples] = useState([]);
+  const [studyTranscript, setStudyTranscript] = useState('');
+  const [isCapturingSpeech, setIsCapturingSpeech] = useState(false);
 
   // Chart hover
   const [waterHoverVal, setWaterHoverVal] = useState(null);
   const [gasHoverVal, setGasHoverVal] = useState(null);
 
-  // Refs for Web Audio
+  // Refs
   const canvasRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
@@ -93,43 +105,54 @@ function App() {
   const studyTimerIntervalRef = useRef(null);
   const lastNoiseSpikeRef = useRef(0);
   const emergencyIntervalRef = useRef(null);
+  const studyRecognitionRef = useRef(null);
+  const studyTranscriptRef = useRef('');
 
-  // --- Theme helper ---
-  const getStateThemeStyles = () => {
-    switch (activeState) {
-      case 'Studying': return { '--state-color': 'var(--study-color)', '--state-glow': 'var(--study-glow)' };
-      case 'Analyzing': return { '--state-color': 'var(--analyze-color)', '--state-glow': 'var(--analyze-glow)' };
-      case 'Alerts': return { '--state-color': 'var(--alert-color)', '--state-glow': 'var(--alert-glow)' };
-      default: return { '--state-color': 'var(--idle-color)', '--state-glow': 'var(--idle-glow)' };
-    }
-  };
+  // Theme (all gray)
+  const getStateThemeStyles = () => ({ '--state-color': '#6b7280' });
 
   // --- Telemetry simulation ---
   useEffect(() => {
     const interval = setInterval(() => {
       setWaterData(prev => {
-        const nextVal = isAnomaly ? +(30 + Math.random() * 10).toFixed(1) : +(4.0 + Math.random() * 1.5).toFixed(1);
-        return [...prev.slice(1), nextVal];
+        const base = leakDetected ? 20 : 50;
+        const drift = Math.random() * 4 - 2;
+        return [...prev.slice(1), +(base + drift).toFixed(1)];
       });
       setGasData(prev => {
-        const nextVal = isAnomaly ? +(4.0 + Math.random() * 1.5).toFixed(2) : +(0.18 + Math.random() * 0.1).toFixed(2);
+        const nextVal = +(0.18 + Math.random() * 0.1).toFixed(2);
         return [...prev.slice(1), nextVal];
       });
     }, 2500);
     return () => clearInterval(interval);
-  }, [isAnomaly]);
+  }, [leakDetected]);
 
-  // --- Biometrics auto-fluctuation ---
+  // Leak detection (automatic if pressure drops below 30)
   useEffect(() => {
-    if (emergencyActive || emergencyDispatched || isListening) return;
+    const latest = waterData[waterData.length - 1];
+    if (latest < 30 && !leakDetected) {
+      setLeakDetected(true);
+      setLeakAction(null);
+      setLeakFixInstructions('');
+      setPreviousState(activeState);
+      setActiveState('Alerts');
+      setTimeline(prev => [
+        ...prev,
+        { time: getStudyTimeFormatted(), msg: 'LEAK DETECTED: Water pressure below 30 PSI.' }
+      ]);
+    }
+  }, [waterData, leakDetected, activeState]);
+
+  // --- Biometrics auto‑fluctuation ---
+  useEffect(() => {
+    if (emergencyActive || emergencyDispatched) return;
     const interval = setInterval(() => {
       setHeartRate(prev => {
         let base = 72;
         if (activeState === 'Studying') base = 78;
         if (activeState === 'Alerts') base = 96;
         if (activeState === 'Analyzing') base = 82;
-        const drift = Math.floor(Math.random() * 5) - 2;
-        return Math.max(60, Math.min(140, base + drift));
+        return Math.max(60, Math.min(140, base + Math.floor(Math.random() * 5) - 2));
       });
       setSpo2(prev => {
         const drift = Math.random() > 0.85 ? (Math.random() > 0.5 ? 1 : -1) : 0;
@@ -137,9 +160,9 @@ function App() {
       });
     }, 1200);
     return () => clearInterval(interval);
-  }, [activeState, emergencyActive, emergencyDispatched, isListening]);
+  }, [activeState, emergencyActive, emergencyDispatched]);
 
-  // --- Sample HR during study ---
+  // HR samples during study
   useEffect(() => {
     if (isStudying) {
       const sampleInterval = setInterval(() => {
@@ -151,7 +174,7 @@ function App() {
     }
   }, [isStudying, heartRate]);
 
-  // --- Emergency monitoring ---
+  // Emergency monitoring
   useEffect(() => {
     if (emergencyActive || emergencyDispatched) return;
     const hrUnsafe = heartRate < 50 || heartRate > 120;
@@ -186,12 +209,8 @@ function App() {
     return () => { if (emergencyIntervalRef.current) clearInterval(emergencyIntervalRef.current); };
   }, []);
 
-  // --- Emergency deactivation ---
   const deactivateEmergency = () => {
-    if (emergencyIntervalRef.current) {
-      clearInterval(emergencyIntervalRef.current);
-      emergencyIntervalRef.current = null;
-    }
+    if (emergencyIntervalRef.current) clearInterval(emergencyIntervalRef.current);
     setEmergencyActive(false);
     setEmergencyDispatched(false);
     setHeartRate(72);
@@ -201,193 +220,42 @@ function App() {
     setEmergencyLog(prev => [...prev, { time: new Date().toLocaleTimeString(), action: 'Deactivated by user' }]);
   };
 
-  // ============================================================
-  //  VOICE INTERACTION – WITH DEBUG STATUS
-  // ============================================================
-  const toggleListening = () => {
-    if (isListening) {
-      stopListeningAndProcess();
-    } else {
-      startListening();
-    }
+  // --- Leak actions ---
+  const simulateLeak = () => {
+    // Manually drop water pressure to trigger leak alert
+    setWaterData(prev => prev.map(() => +(15 + Math.random() * 5).toFixed(1)));
   };
 
-  const startListening = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert('Your browser does not support speech recognition. Please use Chrome or Edge.');
-      setRecognitionStatus('error');
-      return;
+  const resolveLeak = () => {
+    setLeakDetected(false);
+    setLeakAction(null);
+    setLeakFixInstructions('');
+    setActiveState(previousState !== 'Alerts' ? previousState : 'Idle');
+    setWaterData(prev => prev.map(() => +(48 + Math.random() * 12).toFixed(1)));
+  };
+
+  const handleCallMaintenance = () => {
+    setLeakAction('call');
+    if (maintenancePhone) {
+      alert(`Calling maintenance crew at ${maintenancePhone}...`);
+    } else {
+      alert('No maintenance phone set. Please configure it in Settings.');
     }
-    if (!apiKey) {
-      alert('Please set your Gemini API key in Settings first.');
-      return;
-    }
+    // Simulate that call has been made – leak resolved
+    resolveLeak();
+  };
 
-    // Reset all transcript state
-    fullTranscriptRef.current = '';
-    setFullTranscript('');
-    setTranscript('');
-    setGeminiResponse('');
-    setIsProcessing(false);
-    isListeningRef.current = true;
-    setIsListening(true);
-    setRecognitionStatus('listening');
-
-    const recognition = new SpeechRecognition();
-    recognitionRef.current = recognition;
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    recognition.maxAlternatives = 1;
-
-    recognition.onstart = () => {
-      setRecognitionStatus('listening');
-    };
-
-    recognition.onresult = (event) => {
-      let interim = '';
-      let final = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const part = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          final += part;
-        } else {
-          interim += part;
-        }
-      }
-      if (final) {
-        fullTranscriptRef.current = (fullTranscriptRef.current + ' ' + final).trim();
-        setFullTranscript(fullTranscriptRef.current);
-      }
-      const display = (fullTranscriptRef.current + ' ' + interim).trim();
-      setTranscript(display || 'Listening...');
-    };
-
-    recognition.onerror = (event) => {
-      // 'aborted' fires whenever we call recognition.stop() ourselves — not a real error
-      // 'no-speech' is benign; we keep listening
-      if (event.error === 'aborted' || event.error === 'no-speech') {
-        return;
-      }
-      if (event.error === 'not-allowed') {
-        alert('Microphone access denied. Please allow microphone permissions in your browser.');
-        isListeningRef.current = false;
-        setIsListening(false);
-        setRecognitionStatus('error');
-        recognitionRef.current = null;
-        return;
-      }
-      // For any other transient error, just mark status — onend will try to restart
-      console.warn('Speech recognition error:', event.error);
-    };
-
-    recognition.onend = () => {
-      // If we are still supposed to be listening, restart automatically
-      if (isListeningRef.current) {
-        try {
-          recognition.start();
-          setRecognitionStatus('listening');
-        } catch (e) {
-          // recognition was already replaced (user stopped) — ignore
-        }
-      }
-    };
-
+  const handleFixMyself = async () => {
+    setLeakAction('fix');
+    setIsFetchingFix(true);
     try {
-      recognition.start();
-      setRecognitionStatus('listening');
+      const instructions = await getLeakFixInstructions(apiKey);
+      setLeakFixInstructions(instructions);
     } catch (e) {
-      isListeningRef.current = false;
-      setIsListening(false);
-      setRecognitionStatus('error');
-      alert('Failed to start speech recognition: ' + e.message);
-    }
-  };
-
-  const stopListeningAndProcess = () => {
-    // Mark as not listening BEFORE stopping so onend/onerror closures see the update
-    isListeningRef.current = false;
-    setIsListening(false);
-    setRecognitionStatus('idle');
-
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch (e) { }
-      recognitionRef.current = null;
-    }
-
-    const finalMessage = fullTranscriptRef.current.trim();
-    if (finalMessage) {
-      sendToGemini(finalMessage);
-    } else {
-      setTranscript('No speech detected. Click the orb to try again.');
-      setGeminiResponse('');
-      setRecognitionStatus('idle');
-    }
-  };
-
-  const sendToGemini = async (userMessage) => {
-    setIsProcessing(true);
-    setRecognitionStatus('processing');
-    try {
-      const response = await chatWithVbud(apiKey, userMessage);
-      setGeminiResponse(response);
-      speakResponse(response);
-      setRecognitionStatus('idle');
-    } catch (error) {
-      console.error('Gemini error:', error);
-      const errorMsg = 'Sorry, I encountered an error. Please try again.';
-      setGeminiResponse(errorMsg);
-      speakResponse(errorMsg);
-      setRecognitionStatus('error');
+      setLeakFixInstructions('Could not fetch instructions. Please try again.');
     } finally {
-      setIsProcessing(false);
+      setIsFetchingFix(false);
     }
-  };
-
-  const speakResponse = (text) => {
-    if (!window.speechSynthesis) {
-      console.warn('Text-to-speech not supported');
-      return;
-    }
-    synthRef.current.cancel();
-    setIsSpeaking(true);
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.9;
-    utterance.pitch = 1;
-    const voices = synthRef.current.getVoices();
-    utterance.voice = voices.find(voice => voice.lang.includes('en')) || null;
-    utterance.onend = () => { setIsSpeaking(false); };
-    utterance.onerror = () => { setIsSpeaking(false); };
-    synthRef.current.speak(utterance);
-  };
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      isListeningRef.current = false;
-      if (synthRef.current) synthRef.current.cancel();
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch (e) { }
-        recognitionRef.current = null;
-      }
-    };
-  }, []);
-
-  // --- Anomaly trigger / resolve ---
-  const triggerAnomaly = () => {
-    setIsAnomaly(true);
-    setPreviousState(activeState);
-    setActiveState('Alerts');
-    if (isStudying) {
-      const timeStr = getStudyTimeFormatted();
-      setTimeline(prev => [...prev, { time: timeStr, msg: "CRITICAL ALERT: Gas/Water flow rates spiked abnormally!" }]);
-    }
-  };
-
-  const resolveAnomaly = () => {
-    setIsAnomaly(false);
-    setActiveState(isStudying ? 'Studying' : 'Idle');
   };
 
   // --- Face Analysis ---
@@ -407,20 +275,16 @@ function App() {
     try {
       if (!apiKey) {
         await new Promise(resolve => setTimeout(resolve, 2500));
-        const mockResult = {
+        const mock = {
           fatigueScore: 68,
           mood: "Slightly Fatigued",
-          customTips: [
-            "Your facial fatigue indices suggest mild eye strain. Dim your monitor slightly.",
-            "Stand up and do a quick 20‑second body stretch.",
-            "Hydrate! A glass of water can immediately lift cognitive performance."
-          ],
+          customTips: ["Dim your monitor slightly.", "Stand up and stretch.", "Hydrate!"],
           isMock: true
         };
-        setVisionResult(mockResult);
+        setVisionResult(mock);
         if (isStudying) {
           const timeStr = getStudyTimeFormatted();
-          setTimeline(prev => [...prev, { time: timeStr, msg: `Face Scan: ${mockResult.mood} (Fatigue: ${mockResult.fatigueScore}%)` }]);
+          setTimeline(prev => [...prev, { time: timeStr, msg: `Face Scan: ${mock.mood} (Fatigue: ${mock.fatigueScore}%)` }]);
         }
       } else {
         const result = await analyzeFaceImage(apiKey, selectedImage);
@@ -448,11 +312,37 @@ function App() {
     setStudyReport('');
     setTimeline([{ time: "00:00", msg: "Study session initialized." }]);
     setHrSamples([]);
+    setStudyTranscript('');
+    studyTranscriptRef.current = '';
 
     studyTimerIntervalRef.current = setInterval(() => {
       setStudyTime(prev => prev + 1);
     }, 1000);
 
+    // Speech recognition for study summarisation
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+      studyRecognitionRef.current = recognition;
+      recognition.onresult = (event) => {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            studyTranscriptRef.current += ' ' + event.results[i][0].transcript;
+            setStudyTranscript(studyTranscriptRef.current.trim());
+          }
+        }
+      };
+      recognition.onerror = (e) => console.warn('Study speech error:', e.error);
+      try {
+        recognition.start();
+        setIsCapturingSpeech(true);
+      } catch (e) { }
+    }
+
+    // Audio waveform visual
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -484,6 +374,12 @@ function App() {
     analyserRef.current = null;
     cancelAnimationFrame(animationRef.current);
 
+    if (studyRecognitionRef.current) {
+      try { studyRecognitionRef.current.stop(); } catch (e) { }
+      studyRecognitionRef.current = null;
+      setIsCapturingSpeech(false);
+    }
+
     setPreviousState(activeState);
     setActiveState('Analyzing');
     setIsGeneratingReport(true);
@@ -495,33 +391,24 @@ function App() {
     setTimeline(compiledTimeline);
 
     const avgHR = hrSamples.length ? Math.round(hrSamples.reduce((a, b) => a + b, 0) / hrSamples.length) : 77;
+    const transcriptText = studyTranscriptRef.current.trim();
 
     try {
       if (!apiKey) {
         await new Promise(resolve => setTimeout(resolve, 2000));
-        const mockReport = `
-# Study Session Summary
-
-- **Session duration:** ${getStudyTimeFormatted()}
-- **Average heart rate:** ${avgHR} BPM (within normal range)
-
-## Topics Covered
-- Deep work on Vbud dashboard
-- Reviewed biometrics integration
-- Debugged emergency alerts
-
-## Quick Tips
-- Keep your workspace quiet to maintain focus.
-- Take a 5-min break every 25 minutes.
-        `;
-        setStudyReport(mockReport);
+        const mock = `**Study Summary**
+- Duration: ${getStudyTimeFormatted()}
+- Avg HR: ${avgHR} BPM
+- Topics covered: (mock) React state management, CSS animations.
+- Tip: Take regular breaks.`;
+        setStudyReport(mock);
       } else {
-        const report = await generateStudyReport(apiKey, compiledTimeline, avgHR);
+        const report = await generateStudyReport(apiKey, compiledTimeline, avgHR, transcriptText);
         setStudyReport(report);
       }
     } catch (error) {
       console.error(error);
-      setStudyReport(`## Error generating report\n\n${error.message}`);
+      setStudyReport(`Error generating report: ${error.message}`);
     } finally {
       setIsGeneratingReport(false);
       setActiveState('Idle');
@@ -543,7 +430,7 @@ function App() {
     }
   };
 
-  // --- Waveform drawing functions ---
+  // Waveform (real & synthetic)
   const drawRealWaveform = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -563,13 +450,11 @@ function App() {
 
       analyser.getByteTimeDomainData(dataArray);
 
-      ctx.fillStyle = 'rgba(9, 9, 11, 0.2)';
+      ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      ctx.strokeStyle = '#a855f7';
-      ctx.shadowBlur = 10;
-      ctx.shadowColor = 'rgba(168, 85, 247, 0.5)';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#4b5563';
+      ctx.lineWidth = 2;
       ctx.beginPath();
 
       const sliceWidth = canvas.width / bufferLength;
@@ -579,18 +464,15 @@ function App() {
         const v = dataArray[i] / 128.0;
         const y = (v * canvas.height) / 2;
 
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
         x += sliceWidth;
       }
 
       ctx.lineTo(canvas.width, canvas.height / 2);
       ctx.stroke();
-      ctx.shadowBlur = 0;
 
+      // RMS for noise spikes
       let sum = 0;
       for (let i = 0; i < bufferLength; i++) {
         const val = (dataArray[i] - 128) / 128;
@@ -598,9 +480,7 @@ function App() {
       }
       const rms = Math.sqrt(sum / bufferLength);
       const db = Math.round(rms * 100);
-      if (db > 22) {
-        recordNoiseSpike(db);
-      }
+      if (db > 22) recordNoiseSpike(db);
     };
     draw();
   };
@@ -619,13 +499,11 @@ function App() {
       animationRef.current = requestAnimationFrame(draw);
       phase += 0.1;
 
-      ctx.fillStyle = 'rgba(9, 9, 11, 0.25)';
+      ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      ctx.strokeStyle = '#a855f7';
-      ctx.shadowBlur = 8;
-      ctx.shadowColor = 'rgba(168, 85, 247, 0.5)';
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = '#4b5563';
+      ctx.lineWidth = 2;
       ctx.beginPath();
 
       const points = 80;
@@ -633,42 +511,73 @@ function App() {
 
       for (let i = 0; i < points; i++) {
         const x = i * sliceWidth;
-        const amplitude = 25 * Math.sin(i * 0.05 + phase * 0.5);
+        const amplitude = 20 * Math.sin(i * 0.05 + phase * 0.5);
         const y = (canvas.height / 2) + Math.sin(i * 0.15 + phase) * amplitude * Math.sin(i * 0.03);
 
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
 
       ctx.stroke();
-      ctx.shadowBlur = 0;
     };
     draw();
   };
 
+  // --- Chat ---
+  const handleChatSubmit = async (e) => {
+    e?.preventDefault();
+    if (!chatInput.trim() || isChatLoading) return;
+
+    const userMsg = chatInput.trim();
+    setChatInput('');
+    setChatMessages(prev => [...prev, { role: 'user', text: userMsg }]);
+    setIsChatLoading(true);
+
+    try {
+      const context = {
+        waterPressure: waterData[waterData.length - 1],
+        gasFlow: gasData[gasData.length - 1],
+        leakDetected,
+        heartRate,
+        spo2,
+        studyActive: isStudying,
+        studyTime: getStudyTimeFormatted(),
+      };
+      const reply = await chatWithVbud(apiKey, userMsg, context);
+      setChatMessages(prev => [...prev, { role: 'assistant', text: reply }]);
+    } catch (error) {
+      setChatMessages(prev => [...prev, { role: 'assistant', text: 'Sorry, I encountered an error.' }]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
+
+  const handleSaveSettings = () => {
+    setApiKey(tempKey);
+    localStorage.setItem('vbud_gemini_api_key', tempKey);
+    setMaintenancePhone(tempPhone);
+    localStorage.setItem('vbud_maintenance_phone', tempPhone);
+    setShowSettings(false);
+  };
+
   // --- SVG Line Chart ---
-  const renderSVGLineChart = (data, minVal, maxVal, strokeColor, glowColor, type) => {
-    const W = 360;
-    const H = 100;
-    const pad = 10;
-
+  const renderSVGLineChart = (data, minVal, maxVal, strokeColor, type) => {
+    const W = 360, H = 100, pad = 10;
     const count = data.length;
-    const yMin = Math.min(...data) - 0.2;
-    const yMax = Math.max(...data) + 0.2;
+    const yMin = Math.min(...data) - 0.2, yMax = Math.max(...data) + 0.2;
 
-    const points = data.map((val, idx) => {
-      const x = pad + (idx / (count - 1)) * (W - 2 * pad);
-      const y = H - pad - ((val - yMin) / (yMax - yMin)) * (H - 2 * pad);
-      return { x, y, val };
-    });
+    const points = data.map((val, idx) => ({
+      x: pad + (idx / (count - 1)) * (W - 2 * pad),
+      y: H - pad - ((val - yMin) / (yMax - yMin)) * (H - 2 * pad),
+      val
+    }));
 
     let pathD = `M ${points[0].x} ${points[0].y}`;
-    for (let i = 1; i < points.length; i++) {
-      pathD += ` L ${points[i].x} ${points[i].y}`;
-    }
+    for (let i = 1; i < points.length; i++) pathD += ` L ${points[i].x} ${points[i].y}`;
     const fillD = `${pathD} L ${points[points.length - 1].x} ${H} L ${points[0].x} ${H} Z`;
 
     const hoverHandler = (e) => {
@@ -678,10 +587,7 @@ function App() {
       let minDist = Math.abs(points[0].x - (mouseX * (W / rect.width)));
       for (let i = 1; i < points.length; i++) {
         const dist = Math.abs(points[i].x - (mouseX * (W / rect.width)));
-        if (dist < minDist) {
-          minDist = dist;
-          closest = points[i];
-        }
+        if (dist < minDist) { minDist = dist; closest = points[i]; }
       }
       if (type === 'water') setWaterHoverVal(closest);
       else setGasHoverVal(closest);
@@ -697,478 +603,273 @@ function App() {
     return (
       <div className="chart-container" onMouseMove={hoverHandler} onMouseLeave={mouseLeave}>
         <svg viewBox={`0 0 ${W} ${H}`} className="chart-svg">
-          <defs>
-            <linearGradient id={`grad-${type}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={glowColor} stopOpacity="0.45" />
-              <stop offset="100%" stopColor={glowColor} stopOpacity="0.0" />
-            </linearGradient>
-          </defs>
-
-          <line x1="0" y1={H / 2} x2={W} y2={H / 2} stroke="rgba(255,255,255,0.05)" strokeDasharray="3,3" />
-          <line x1="0" y1={pad} x2={W} y2={pad} stroke="rgba(255,255,255,0.03)" strokeDasharray="3,3" />
-          <line x1="0" y1={H - pad} x2={W} y2={H - pad} stroke="rgba(255,255,255,0.03)" strokeDasharray="3,3" />
-
-          <path d={fillD} fill={`url(#grad-${type})`} />
-          <path d={pathD} stroke={strokeColor} strokeWidth="2.5" fill="none" strokeLinecap="round" />
-
+          <line x1="0" y1={H / 2} x2={W} y2={H / 2} stroke="#333" strokeDasharray="3,3" />
+          <path d={fillD} fill={`${strokeColor}10`} />
+          <path d={pathD} stroke={strokeColor} strokeWidth="2" fill="none" strokeLinecap="round" />
           {activeHover && (
             <>
-              <line x1={activeHover.x} y1="0" x2={activeHover.x} y2={H} stroke="rgba(255,255,255,0.25)" strokeDasharray="2,2" />
-              <circle cx={activeHover.x} cy={activeHover.y} r="5" fill={strokeColor} stroke="#ffffff" strokeWidth="1.5" />
+              <line x1={activeHover.x} y1="0" x2={activeHover.x} y2={H} stroke="#555" strokeDasharray="2,2" />
+              <circle cx={activeHover.x} cy={activeHover.y} r="4" fill={strokeColor} />
             </>
           )}
         </svg>
-
         {activeHover && (
-          <div
-            className="chart-tooltip"
-            style={{
-              display: 'block',
-              left: `${(activeHover.x / W) * 100}%`,
-              top: `${(activeHover.y / H) * 100 - 30}%`,
-              transform: 'translateX(-50%)'
-            }}
-          >
-            {activeHover.val} {type === 'water' ? 'L/m' : 'm³/h'}
+          <div className="chart-tooltip" style={{ left: `${(activeHover.x / W) * 100}%`, top: `${(activeHover.y / H) * 100 - 30}%` }}>
+            {activeHover.val} {type === 'water' ? 'PSI' : 'm³/h'}
           </div>
         )}
       </div>
     );
   };
 
-  // --- Markdown Renderer ---
+  // Simple markdown renderer
   const renderMarkdown = (text) => {
     if (!text) return null;
-
     const lines = text.split('\n');
     const elements = [];
-    let inList = false;
-    let listItems = [];
-    let inCode = false;
-    let codeLines = [];
-    let inTable = false;
-    let tableRows = [];
+    let inList = false, listItems = [];
 
-    const flushList = () => {
-      if (listItems.length > 0) {
-        elements.push(
-          <ul key={`list-${elements.length}`} className="md-list">
-            {listItems.map((item, i) => (
-              <li key={i} className="md-list-item" dangerouslySetInnerHTML={{ __html: item }} />
-            ))}
-          </ul>
-        );
-        listItems = [];
-      }
-    };
-
-    const flushCode = () => {
-      if (codeLines.length > 0) {
-        elements.push(
-          <pre key={`code-${elements.length}`} className="md-code-block">
-            <code>{codeLines.join('\n')}</code>
-          </pre>
-        );
-        codeLines = [];
-      }
-    };
-
-    const flushTable = () => {
-      if (tableRows.length > 0) {
-        const header = tableRows[0].split('|').map(cell => cell.trim()).filter(cell => cell);
-        const rows = tableRows.slice(1).map(row => row.split('|').map(cell => cell.trim()).filter(cell => cell));
-        elements.push(
-          <table key={`table-${elements.length}`} className="md-table">
-            <thead><tr>{header.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
-            <tbody>{rows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody>
-          </table>
-        );
-        tableRows = [];
-      }
-    };
-
-    const renderMarkdownInline = (text) => {
-      if (!text) return '';
-      return text
-        .replace(/\*\*(.*?)\*\*/g, '<strong class="md-bold">$1</strong>')
-        .replace(/__(.*?)__/g, '<strong class="md-bold">$1</strong>')
+    const renderInline = (t) =>
+      t.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
         .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/_(.*?)_/g, '<em>$1</em>')
-        .replace(/`(.*?)`/g, '<code class="md-inline-code">$1</code>');
-    };
+        .replace(/`(.*?)`/g, '<code>$1</code>');
 
     for (let i = 0; i < lines.length; i++) {
       let line = lines[i];
-
-      if (line.trim().startsWith('```')) {
-        if (!inCode) {
-          flushList();
-          inCode = true;
-          continue;
-        } else {
-          flushCode();
-          inCode = false;
-          continue;
-        }
-      }
-      if (inCode) {
-        codeLines.push(line);
-        continue;
-      }
-
-      if (line.includes('|') && line.trim().startsWith('|') && line.trim().endsWith('|')) {
-        if (!inTable) { flushList(); inTable = true; }
-        tableRows.push(line);
-        if (i === lines.length - 1 || !lines[i + 1].includes('|')) {
-          flushTable();
-          inTable = false;
-        }
-        continue;
-      }
-      if (inTable) { flushTable(); inTable = false; }
-
-      if (line.trim().startsWith('> ')) {
-        flushList();
-        elements.push(
-          <blockquote key={`blockquote-${i}`} className="md-blockquote">
-            {renderMarkdownInline(line.trim().slice(2))}
-          </blockquote>
-        );
-        continue;
-      }
-
-      if (line.startsWith('# ')) {
-        flushList();
-        elements.push(<h2 key={`h2-${i}`} className="md-header-1" dangerouslySetInnerHTML={{ __html: line.slice(2) }} />);
-        continue;
-      }
-      if (line.startsWith('## ')) {
-        flushList();
-        elements.push(<h3 key={`h3-${i}`} className="md-header-2" dangerouslySetInnerHTML={{ __html: line.slice(3) }} />);
-        continue;
-      }
-      if (line.startsWith('### ')) {
-        flushList();
-        elements.push(<h4 key={`h4-${i}`} className="md-header-3" dangerouslySetInnerHTML={{ __html: line.slice(4) }} />);
-        continue;
-      }
-
+      if (line.startsWith('```')) continue;
+      if (line.startsWith('# ')) { elements.push(<h2 key={i} style={{ color: '#9ca3af' }} dangerouslySetInnerHTML={{ __html: line.slice(2) }} />); continue; }
+      if (line.startsWith('## ')) { elements.push(<h3 key={i} style={{ color: '#9ca3af' }} dangerouslySetInnerHTML={{ __html: line.slice(3) }} />); continue; }
       if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
         inList = true;
-        listItems.push(renderMarkdownInline(line.trim().slice(2)));
+        listItems.push(renderInline(line.trim().slice(2)));
         continue;
-      } else if (line.trim().match(/^\d+\. /)) {
-        inList = true;
-        listItems.push(renderMarkdownInline(line.trim().replace(/^\d+\. /, '')));
-        continue;
-      } else {
-        if (inList) { flushList(); inList = false; }
       }
-
+      if (inList && !line.trim().startsWith('-') && !line.trim().startsWith('*')) {
+        elements.push(<ul key={`ul-${i}`}>{listItems.map((item, idx) => <li key={idx} dangerouslySetInnerHTML={{ __html: item }} />)}</ul>);
+        listItems = [];
+        inList = false;
+      }
       if (line.trim() === '') continue;
-
-      elements.push(<p key={`p-${i}`} className="md-paragraph" dangerouslySetInnerHTML={{ __html: renderMarkdownInline(line) }} />);
+      elements.push(<p key={i} dangerouslySetInnerHTML={{ __html: renderInline(line) }} />);
     }
-
-    if (inList) flushList();
-    if (inCode) flushCode();
-    if (inTable) flushTable();
-
-    return <div className="report-markdown">{elements}</div>;
+    if (inList) elements.push(<ul key="last">{listItems.map((item, idx) => <li key={idx} dangerouslySetInnerHTML={{ __html: item }} />)}</ul>);
+    return <div>{elements}</div>;
   };
 
-  // --- Settings handler ---
-  const handleSaveSettings = () => {
-    setApiKey(tempKey);
-    localStorage.setItem('vbud_gemini_api_key', tempKey);
-    setShowSettings(false);
-  };
-
-  // --- JSX ---
+  // --- Render ---
   return (
     <div style={getStateThemeStyles()}>
-      {/* Overlay for listening mode */}
-      {isListening && (
-        <div className="emergency-modal-backdrop" style={{ background: 'rgba(0,0,0,0.85)', zIndex: 2000, justifyContent: 'center', alignItems: 'center' }}>
-          <div style={{ textAlign: 'center', maxWidth: '500px', width: '90%' }}>
-            <div className="avatar-orb" style={{ width: 150, height: 150, margin: '0 auto', animation: 'orbPulseIdle 1s infinite' }}>
-              <div className="orb-inner" style={{ width: 130, height: 130 }}>
-                <Mic size={48} color="#fbbf24" />
-              </div>
-            </div>
-            <div className="speech-bubble" style={{ position: 'static', marginTop: '1.5rem', background: 'rgba(0,0,0,0.9)', maxWidth: '100%' }}>
-              <p style={{ fontSize: '1rem', margin: 0 }}>
-                {transcript || 'Listening... speak now'}
-              </p>
-              <p style={{ fontSize: '0.7rem', color: '#94a3b8', marginTop: '0.5rem' }}>
-                Status: {recognitionStatus}
-              </p>
-            </div>
-            <div style={{ marginTop: '1.5rem' }}>
-              <button className="glass-button" onClick={toggleListening} style={{ borderColor: '#ef4444', color: '#ef4444' }}>
-                <MicOff size={16} /> Stop & Send
-              </button>
-            </div>
+      {/* Header */}
+      <header className="dashboard-header">
+        <div className="brand-section">
+          <h1>Vbud <span className="brand-accent">Cockpit</span></h1>
+        </div>
+        <div className="header-actions">
+          {apiKey ? (
+            <span className="state-badge"><CheckCircle size={12} color="#9ca3af" /> Connected</span>
+          ) : (
+            <span className="state-badge">Demo Mode</span>
+          )}
+          <button className="glass-button" onClick={() => { setTempKey(apiKey); setTempPhone(maintenancePhone); setShowSettings(true); }}>
+            <Settings size={16} /> Settings
+          </button>
+        </div>
+      </header>
+
+      {/* Orb – opens chat */}
+      <div className="orb-container" onClick={() => setShowChat(!showChat)}>
+        <div className="avatar-orb">
+          <div className="orb-inner">
+            <MessageCircle size={32} color="#9ca3af" />
           </div>
+        </div>
+        <div className="state-badge">
+          <span className="state-indicator-dot"></span>
+          Vbud State: {activeState}
+        </div>
+      </div>
+
+      {/* Chat Panel */}
+      {showChat && (
+        <div className="chat-panel">
+          <div className="chat-header">
+            <span>Vbud Assistant</span>
+            <button onClick={() => setShowChat(false)}><X size={16} /></button>
+          </div>
+          <div className="chat-messages">
+            {chatMessages.map((msg, i) => (
+              <div key={i} className={`chat-bubble ${msg.role}`}>
+                {msg.text}
+              </div>
+            ))}
+            {isChatLoading && <div className="chat-bubble assistant">Typing...</div>}
+            <div ref={chatEndRef} />
+          </div>
+          <form className="chat-input-row" onSubmit={handleChatSubmit}>
+            <input
+              type="text"
+              placeholder="Ask about your data..."
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              disabled={isChatLoading}
+            />
+            <button type="submit" disabled={isChatLoading}><Send size={16} /></button>
+          </form>
         </div>
       )}
 
-      {/* Overlay for Gemini response */}
-      {!isListening && geminiResponse && (
-        <div className="emergency-modal-backdrop" style={{ background: 'rgba(0,0,0,0.85)', zIndex: 2000, justifyContent: 'center', alignItems: 'center' }}>
-          <div style={{ textAlign: 'center', maxWidth: '500px', width: '90%' }}>
-            <div className="avatar-orb" style={{ width: 150, height: 150, margin: '0 auto' }}>
-              <div className="orb-inner" style={{ width: 130, height: 130 }}>
-                <span className="orb-avatar-symbol" style={{ fontSize: '2.5rem', color: '#34d399' }}>✦</span>
-              </div>
-            </div>
-            <div className="speech-bubble" style={{ position: 'static', marginTop: '1.5rem', background: 'rgba(0,0,0,0.9)', maxWidth: '100%' }}>
-              <p style={{ fontSize: '1rem', margin: 0 }}>{geminiResponse}</p>
-            </div>
-            <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-              <button className="glass-button" onClick={() => setGeminiResponse('')} style={{ borderColor: '#94a3b8', color: '#94a3b8' }}>
-                Close
-              </button>
-              {!isSpeaking && (
-                <button className="glass-button" onClick={() => speakResponse(geminiResponse)} style={{ borderColor: '#10b981', color: '#34d399' }}>
-                  Replay
-                </button>
+      {/* Leak Alert Banner */}
+      {leakDetected && (
+        <div className="alert-banner">
+          <div className="alert-content">
+            <AlertTriangle size={24} color="#f59e0b" />
+            <div>
+              <strong style={{ color: '#f59e0b' }}>LEAK DETECTED:</strong> Water pressure below 30 PSI.
+              {leakAction === null && (
+                <div className="alert-actions">
+                  <button className="glass-button" onClick={handleCallMaintenance}>
+                    <Phone size={14} /> Call Maintenance
+                  </button>
+                  <button className="glass-button" onClick={handleFixMyself}>
+                    <Wrench size={14} /> Fix it Myself
+                  </button>
+                </div>
+              )}
+              {isFetchingFix && <p>Fetching fix instructions...</p>}
+              {leakAction === 'fix' && leakFixInstructions && (
+                <div className="leak-fix-panel">
+                  <strong style={{ color: '#9ca3af' }}>Fix Guide:</strong>
+                  <div dangerouslySetInnerHTML={{ __html: leakFixInstructions.replace(/\n/g, '<br/>') }} />
+                  <button className="glass-button" onClick={resolveLeak} style={{ marginTop: '0.5rem' }}>Mark as Fixed</button>
+                </div>
               )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Header */}
-      <header className="dashboard-header">
-        <div className="brand-section"><h1>Vbud <span className="brand-accent">Cockpit</span></h1></div>
-        <div className="header-actions">
-          {apiKey ? (
-            <span className="state-badge" style={{ borderColor: 'rgba(16, 185, 129, 0.3)', color: '#34d399' }}>
-              <CheckCircle size={12} /> Gemini Connected
-            </span>
-          ) : (
-            <span className="state-badge" style={{ borderColor: 'rgba(245, 158, 11, 0.3)', color: '#fbbf24' }}>
-              Demo (Mock mode)
-            </span>
-          )}
-          <button className="glass-button" onClick={() => { setTempKey(apiKey); setShowSettings(true); }}>
-            <Settings size={16} /> Key settings
-          </button>
-        </div>
-      </header>
-
-      {/* Orb with click listener */}
-      <div className="orb-container">
-        <div
-          className={`avatar-orb state-${activeState.toLowerCase()}`}
-          title={`Vbud state: ${activeState}`}
-          onClick={toggleListening}
-          style={{ cursor: 'pointer' }}
-        >
-          <div className="orb-inner">
-            <span className="orb-avatar-symbol" style={{ fontSize: '2.5rem' }}>✦</span>
+      {/* Emergency Modals */}
+      {emergencyActive && (
+        <div className="modal-backdrop">
+          <div className="modal-content" style={{ borderColor: '#ef4444' }}>
+            <div className="emergency-icon"><AlertCircle size={40} color="#ef4444" /></div>
+            <h2 style={{ color: '#ef4444' }}>Emergency Alert</h2>
+            <p>Unsafe biometrics detected!</p>
+            <div className="countdown-number">{emergencyCountdown}</div>
+            <p>seconds until dispatch</p>
+            <button className="glass-button" onClick={deactivateEmergency} style={{ borderColor: '#10b981', color: '#10b981' }}>Deactivate Alert</button>
           </div>
         </div>
-        <div className="state-badge">
-          <span className="state-indicator-dot"></span>
-          Vbud state: {activeState}
+      )}
+      {emergencyDispatched && (
+        <div className="modal-backdrop">
+          <div className="modal-content" style={{ borderColor: '#ef4444' }}>
+            <h2 style={{ color: '#ef4444' }}>Emergency Dispatched</h2>
+            <p>Help is on the way.</p>
+            <button className="glass-button" onClick={() => setEmergencyDispatched(false)}>Dismiss</button>
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Main grid */}
+      {/* Main Grid */}
       <div className="cockpit-grid">
-        {/* Anomaly banner */}
-        {isAnomaly && (
-          <div className="anomaly-warning">
-            <div className="anomaly-content">
-              <AlertTriangle className="warning-icon-animate" size={24} />
-              <div><strong>CRITICAL TELEMETRY SPIKE DETECTED:</strong> Unusual flow rates on water and gas feeds.</div>
-            </div>
-            <button className="glass-button" onClick={resolveAnomaly} style={{ borderColor: '#ef4444', color: '#ef4444' }}>
-              Resolve anomaly
-            </button>
-          </div>
-        )}
-
-        {/* Emergency modals */}
-        {emergencyActive && (
-          <div className="emergency-modal-backdrop">
-            <div className="emergency-modal-content">
-              <div className="emergency-dispatching-pulse"><AlertCircle size={40} color="#ef4444" /></div>
-              <h2 style={{ color: '#ef4444' }}>Emergency Alert</h2>
-              <p style={{ color: '#fca5a5', fontSize: '0.9rem' }}>
-                Unsafe biometrics detected! {heartRate < 50 ? 'Heart rate too low' : heartRate > 120 ? 'Heart rate too high' : ''}
-                {spo2 < 90 ? ' and Oxygen saturation below 90%' : ''}
-              </p>
-              <div className="emergency-countdown-number">{emergencyCountdown}</div>
-              <p style={{ color: '#fca5a5', fontSize: '0.8rem' }}>seconds until dispatch</p>
-              <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
-                <button className="glass-button" onClick={deactivateEmergency} style={{ borderColor: '#10b981', color: '#34d399' }}>
-                  Deactivate Alert
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {emergencyDispatched && (
-          <div className="emergency-modal-backdrop" style={{ background: 'rgba(0, 0, 0, 0.9)' }}>
-            <div className="emergency-modal-content">
-              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>SOS</div>
-              <h2 style={{ color: '#ef4444' }}>Emergency Dispatched</h2>
-              <p style={{ color: '#fca5a5' }}>Vbud has contacted emergency services on your behalf.</p>
-              <p style={{ color: '#94a3b8', fontSize: '0.8rem' }}>Stay calm. Help is on the way.</p>
-              <button className="glass-button" onClick={() => setEmergencyDispatched(false)} style={{ marginTop: '1.5rem' }}>
-                Dismiss
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Card 1: Telemetry */}
+        {/* Card 1: Pipeline Monitor */}
         <div className="glass-card">
           <div className="card-header-row">
-            <h2 className="card-title"><Droplet size={18} /> Telemetry Stream</h2>
+            <h2 className="card-title">Pipeline Monitor</h2>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
-              {!isAnomaly ? (
-                <button className="glass-button" onClick={triggerAnomaly} style={{ borderColor: 'rgba(239, 68, 68, 0.3)', color: '#f87171' }}>
-                  Simulate spike
+              {!leakDetected && (
+                <button className="glass-button" onClick={simulateLeak} style={{ borderColor: '#f59e0b', color: '#f59e0b' }}>
+                  Simulate Leak
                 </button>
-              ) : (
-                <button className="glass-button" onClick={resolveAnomaly}>Reset streams</button>
+              )}
+              {leakDetected && (
+                <button className="glass-button" onClick={resolveLeak}>Resolve</button>
               )}
             </div>
           </div>
           <div className="telemetry-grid">
             <div className="telemetry-stat-card">
-              <span className="watch-label" style={{ color: '#0ea5e9' }}>Water Flow Rate</span>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.25rem', marginTop: '0.25rem' }}>
-                <span className="watch-value" style={{ fontSize: '1.75rem', color: '#0ea5e9' }}>
-                  {waterData[waterData.length - 1]}
-                </span>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>L/min</span>
-              </div>
+              <span className="watch-label">Water Pressure</span>
+              <div className="watch-value">{waterData[waterData.length - 1]} PSI</div>
             </div>
             <div className="telemetry-stat-card">
-              <span className="watch-label" style={{ color: '#f59e0b' }}>Gas flow volume</span>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.25rem', marginTop: '0.25rem' }}>
-                <span className="watch-value" style={{ fontSize: '1.75rem', color: '#f59e0b' }}>
-                  {gasData[gasData.length - 1]}
-                </span>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>m³/hour</span>
-              </div>
+              <span className="watch-label">Gas Flow</span>
+              <div className="watch-value">{gasData[gasData.length - 1]} m³/h</div>
             </div>
           </div>
           <div style={{ marginBottom: '1.5rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              <span>Water usage timeline</span>
-              <span>Latest: {waterData[waterData.length - 1]} L/min</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#9ca3af' }}>
+              <span>Water Pressure Timeline</span>
+              <span>Latest: {waterData[waterData.length - 1]} PSI</span>
             </div>
-            {renderSVGLineChart(waterData, 2.5, 45, '#0ea5e9', 'rgba(14,165,233,0.3)', 'water')}
+            {renderSVGLineChart(waterData, 25, 70, '#6b7280', 'water')}
           </div>
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              <span>Gas telemetry timeline</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#9ca3af' }}>
+              <span>Gas Flow Timeline</span>
               <span>Latest: {gasData[gasData.length - 1]} m³/h</span>
             </div>
-            {renderSVGLineChart(gasData, 0.1, 5, '#f59e0b', 'rgba(245,158,11,0.3)', 'gas')}
+            {renderSVGLineChart(gasData, 0.1, 0.5, '#4b5563', 'gas')}
           </div>
         </div>
 
         {/* Card 2: Biometrics */}
         <div className="glass-card">
           <div className="card-header-row">
-            <h2 className="card-title"><Heart size={18} /> Biometrics Wristwatch</h2>
+            <h2 className="card-title"><Heart size={18} /> Biometrics</h2>
           </div>
-          <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+          <div style={{ display: 'flex', gap: '1.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
             <div className="watch-display">
-              <div className="watch-glow-ring"></div>
-              <Activity size={18} className="heart-rate-color" style={{ animation: 'dotFlash 1s infinite' }} />
-              <span className="watch-label" style={{ marginTop: '0.25rem' }}>Heart Rate</span>
-              <span className="watch-value heart-rate-color">{heartRate}</span>
-              <span className="watch-label" style={{ fontSize: '0.55rem' }}>BPM</span>
+              <Activity size={18} style={{ color: '#ef4444' }} />
+              <span className="watch-label">Heart Rate</span>
+              <span className="watch-value" style={{ color: '#ef4444' }}>{heartRate}</span>
+              <span className="watch-unit">BPM</span>
             </div>
             <div className="watch-display">
-              <div className="watch-glow-ring"></div>
-              <Zap size={18} className="spo2-color" />
-              <span className="watch-label" style={{ marginTop: '0.25rem' }}>Blood Oxygen</span>
-              <span className="watch-value spo2-color">{spo2}%</span>
-              <span className="watch-label" style={{ fontSize: '0.55rem' }}>SpO₂</span>
+              <Zap size={18} style={{ color: '#38bdf8' }} />
+              <span className="watch-label">Blood Oxygen</span>
+              <span className="watch-value" style={{ color: '#38bdf8' }}>{spo2}%</span>
+              <span className="watch-unit">SpO₂</span>
             </div>
           </div>
-
           <div className="watch-grid" style={{ marginTop: '1.5rem' }}>
             <div className="watch-stat-box">
-              <Heart size={16} className="heart-rate-color" />
+              <Heart size={16} style={{ color: '#ef4444' }} />
               <div>
-                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Heart Rate</div>
+                <div className="watch-label">Heart Rate</div>
                 <div className="biometric-slider-container">
                   <div className="biometric-slider-row">
                     <span>40</span>
                     <span>{heartRate} BPM</span>
                     <span>160</span>
                   </div>
-                  <input
-                    type="range"
-                    min="40"
-                    max="160"
-                    value={heartRate}
-                    onChange={(e) => setHeartRate(Number(e.target.value))}
-                    className="biometric-input-slider hr-accent"
-                  />
-                  <div style={{ display: 'flex', justifyContent: 'center', marginTop: '0.25rem' }}>
-                    <input
-                      type="number"
-                      min="40"
-                      max="160"
-                      value={heartRate}
-                      onChange={(e) => setHeartRate(Math.min(160, Math.max(40, Number(e.target.value) || 40)))}
-                      className="biometric-input-number"
-                      style={{ width: '60px' }}
-                    />
-                  </div>
+                  <input type="range" min="40" max="160" value={heartRate} onChange={(e) => setHeartRate(Number(e.target.value))} className="biometric-input-slider" style={{ accentColor: '#ef4444' }} />
+                  <input type="number" min="40" max="160" value={heartRate} onChange={(e) => setHeartRate(Math.min(160, Math.max(40, Number(e.target.value) || 40)))} className="biometric-input-number" />
                 </div>
               </div>
             </div>
             <div className="watch-stat-box">
-              <Zap size={16} className="spo2-color" />
+              <Zap size={16} style={{ color: '#38bdf8' }} />
               <div>
-                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>SpO₂</div>
+                <div className="watch-label">SpO₂</div>
                 <div className="biometric-slider-container">
                   <div className="biometric-slider-row">
                     <span>80</span>
                     <span>{spo2}%</span>
                     <span>100</span>
                   </div>
-                  <input
-                    type="range"
-                    min="80"
-                    max="100"
-                    value={spo2}
-                    onChange={(e) => setSpo2(Number(e.target.value))}
-                    className="biometric-input-slider spo2-accent"
-                  />
-                  <div style={{ display: 'flex', justifyContent: 'center', marginTop: '0.25rem' }}>
-                    <input
-                      type="number"
-                      min="80"
-                      max="100"
-                      value={spo2}
-                      onChange={(e) => setSpo2(Math.min(100, Math.max(80, Number(e.target.value) || 80)))}
-                      className="biometric-input-number"
-                      style={{ width: '60px' }}
-                    />
-                  </div>
+                  <input type="range" min="80" max="100" value={spo2} onChange={(e) => setSpo2(Number(e.target.value))} className="biometric-input-slider" style={{ accentColor: '#38bdf8' }} />
+                  <input type="number" min="80" max="100" value={spo2} onChange={(e) => setSpo2(Math.min(100, Math.max(80, Number(e.target.value) || 80)))} className="biometric-input-number" />
                 </div>
               </div>
             </div>
           </div>
-          <div style={{ marginTop: '0.75rem', fontSize: '0.7rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+          <div style={{ marginTop: '0.75rem', fontSize: '0.7rem', textAlign: 'center' }}>
             {heartRate < 50 || heartRate > 120 || spo2 < 90 ? (
               <span style={{ color: '#ef4444' }}>Unsafe range — emergency monitoring active</span>
             ) : (
-              <span style={{ color: '#34d399' }}>All biometrics within safe limits</span>
+              <span style={{ color: '#10b981' }}>All biometrics within safe limits</span>
             )}
           </div>
         </div>
@@ -1183,15 +884,13 @@ function App() {
               <div className="image-preview-container">
                 <img src={imagePreviewUrl} className="image-preview" alt="Face preview" />
                 <div className="image-preview-overlay">
-                  <span style={{ fontSize: '0.8rem', textShadow: '0 1px 4px black' }}>{selectedImage.name}</span>
-                  <button className="glass-button" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }} onClick={() => setImagePreviewUrl('')}>
-                    Change image
-                  </button>
+                  <span>{selectedImage.name}</span>
+                  <button className="glass-button" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }} onClick={() => setImagePreviewUrl('')}>Change</button>
                 </div>
               </div>
               {!visionResult && !isAnalyzingImage && (
                 <button className="glass-button active" style={{ width: '100%', justifyContent: 'center' }} onClick={analyzeFace}>
-                  <Sparkles size={16} /> Analyze biometric fatigue
+                  <Sparkles size={16} /> Analyze Fatigue
                 </button>
               )}
             </div>
@@ -1199,176 +898,146 @@ function App() {
             <label className="upload-zone">
               <Upload size={32} style={{ opacity: 0.5 }} />
               <div>
-                <p style={{ fontSize: '0.9rem', fontWeight: 500, margin: '0 0 0.25rem 0' }}>Upload facial photo</p>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>PNG or JPG. Vbud will run node scan analysis.</p>
+                <p style={{ fontSize: '0.9rem', fontWeight: 500, margin: '0 0 0.25rem' }}>Upload facial photo</p>
+                <p style={{ fontSize: '0.75rem', color: '#9ca3af' }}>PNG or JPG. Vbud will analyze fatigue.</p>
               </div>
               <input type="file" accept="image/*" onChange={handleImageChange} style={{ display: 'none' }} />
             </label>
           )}
           {isAnalyzingImage && (
             <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
-              <span className="state-indicator-dot" style={{ animationDuration: '0.6s' }}></span>
-              <p style={{ fontSize: '0.85rem', color: '#10b981', marginTop: '0.5rem' }}>Vbud scanning fatigue index...</p>
+              <span className="state-indicator-dot"></span>
+              <p style={{ fontSize: '0.85rem', color: '#9ca3af', marginTop: '0.5rem' }}>Scanning fatigue index...</p>
             </div>
           )}
           {visionResult && (
             <div className="vision-results">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Biometric Scan Analysis</span>
-                {visionResult.isMock && (
-                  <span style={{ fontSize: '0.65rem', background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', padding: '0.1rem 0.4rem', borderRadius: '4px', marginLeft: 'auto' }}>Mock Result</span>
-                )}
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                <span style={{ fontWeight: 600 }}>Biometric Scan Analysis</span>
+                {visionResult.isMock && <span style={{ fontSize: '0.65rem', color: '#f59e0b' }}>Mock Result</span>}
               </div>
               <div className="results-grid">
                 <div className="result-metric-card">
-                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Fatigue level</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 700, margin: '0.15rem 0' }}>{visionResult.fatigueScore}%</div>
+                  <div style={{ fontSize: '0.65rem', color: '#9ca3af' }}>Fatigue Level</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 700 }}>{visionResult.fatigueScore}%</div>
                   <div className="bar-track">
-                    <div
-                      className={`bar-fill ${visionResult.fatigueScore > 70 ? 'high-fatigue' : visionResult.fatigueScore > 40 ? 'mid-fatigue' : 'low-fatigue'}`}
-                      style={{ width: `${visionResult.fatigueScore}%` }}
-                    />
+                    <div className="bar-fill" style={{ width: `${visionResult.fatigueScore}%`, backgroundColor: visionResult.fatigueScore > 70 ? '#ef4444' : visionResult.fatigueScore > 40 ? '#f59e0b' : '#10b981' }} />
                   </div>
                 </div>
                 <div className="result-metric-card">
-                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Inferred Mood</div>
-                  <div style={{ fontSize: '1.1rem', fontWeight: 700, marginTop: '0.3rem', color: '#10b981' }}>{visionResult.mood}</div>
+                  <div style={{ fontSize: '0.65rem', color: '#9ca3af' }}>Inferred Mood</div>
+                  <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#10b981' }}>{visionResult.mood}</div>
                 </div>
               </div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                <strong>Vbud Health Recommendations:</strong>
-                <ul style={{ margin: '0.25rem 0 0 0', paddingLeft: '1rem' }}>
-                  {visionResult.customTips.map((tip, i) => (
-                    <li key={i} style={{ marginBottom: '0.25rem', color: '#e4e4e7' }}>{tip}</li>
-                  ))}
+              <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
+                <strong>Recommendations:</strong>
+                <ul style={{ margin: '0.25rem 0 0', paddingLeft: '1rem' }}>
+                  {visionResult.customTips.map((tip, i) => <li key={i} style={{ color: '#e4e4e7' }}>{tip}</li>)}
                 </ul>
               </div>
             </div>
           )}
         </div>
 
-        {/* Card 4: Studying Mode */}
+        {/* Card 4: Study Mode */}
         <div className="glass-card">
           <div className="card-header-row">
-            <h2 className="card-title"><Moon size={18} /> Studying state controller</h2>
+            <h2 className="card-title"><Moon size={18} /> Study Mode</h2>
             {!isStudying ? (
-              <button className="glass-button active" onClick={startStudying}><Play size={14} /> Start Study Mode</button>
+              <button className="glass-button active" onClick={startStudying}><Play size={14} /> Start Study</button>
             ) : (
-              <button className="glass-button" onClick={stopStudying} style={{ borderColor: '#ef4444', color: '#ef4444', background: 'rgba(239, 68, 68, 0.08)' }}>
-                <Square size={14} /> Stop Study Mode
-              </button>
+              <button className="glass-button" onClick={stopStudying} style={{ color: '#ef4444' }}><Square size={14} /> Stop Study</button>
             )}
           </div>
-          <div className="study-mode-container">
-            {isStudying ? (
-              <>
-                <div className="study-visualizers">
-                  <div className="waveform-container">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
-                      <span>Mic noise feed (Web Audio)</span>
-                      <span style={{ color: '#a855f7' }}>Live Waveform</span>
-                    </div>
-                    <canvas ref={canvasRef} className="waveform-canvas"></canvas>
-                  </div>
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
-                      <span>Focus scan view (mock)</span>
-                      <span style={{ color: '#a855f7' }}>REC {getStudyTimeFormatted()}</span>
-                    </div>
-                    <div className="camera-preview-mock active">
-                      <div className="camera-face-outline pulse"></div>
-                      <div className="camera-scanner-line"></div>
-                      <div style={{ position: 'absolute', bottom: '0.5rem', left: '0.5rem', fontSize: '0.65rem', color: '#a855f7', fontWeight: 600 }}>
-                        FACIAL TRACKING: ACTIVE
-                      </div>
-                    </div>
-                  </div>
+          {isStudying ? (
+            <>
+              <div className="study-live-transcript">
+                <span className="watch-label">Live Transcript</span>
+                <div className="transcript-box">
+                  {isCapturingSpeech ? (studyTranscript || 'Listening...') : 'Speech recognition not supported'}
                 </div>
-                <div>
-                  <span className="watch-label">Session timeline log</span>
-                  <div className="timeline-tracker" style={{ marginTop: '0.25rem' }}>
-                    {timeline.map((evt, i) => (
-                      <div className="timeline-event-row" key={i}>
-                        <span className="timeline-time">{evt.time}</span>
-                        <span className="timeline-msg">{evt.msg}</span>
-                      </div>
-                    ))}
+              </div>
+              <div className="study-visualizers">
+                <div className="waveform-container">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
+                    <span>Microphone Feed</span>
+                    <span style={{ color: '#6b7280' }}>REC {getStudyTimeFormatted()}</span>
                   </div>
+                  <canvas ref={canvasRef} className="waveform-canvas"></canvas>
                 </div>
-              </>
-            ) : (
-              <div style={{ textAlign: 'center', padding: '2rem 1.5rem', background: 'rgba(0,0,0,0.15)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.03)' }}>
-                <Moon size={32} style={{ opacity: 0.25, marginBottom: '0.5rem' }} />
-                <p style={{ fontSize: '0.9rem', fontWeight: 500 }}>Studying Mode is currently Inactive</p>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '300px', margin: '0.25rem auto 0 auto' }}>
-                  Toggle Studying Mode to activate audio decibel checks, camera scanning mock, and event recording.
-                </p>
-              </div>
-            )}
-            {isGeneratingReport && (
-              <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
-                <span className="state-indicator-dot" style={{ animationDuration: '0.6s' }}></span>
-                <p style={{ fontSize: '0.85rem', color: '#a855f7', marginTop: '0.5rem' }}>Vbud compiling focus timeline metrics...</p>
-              </div>
-            )}
-            {studyReport && (
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem', fontSize: '0.85rem', fontWeight: 600 }}>
-                  <FileText size={16} style={{ color: '#a855f7' }} />
-                  <span>Study session evaluation report</span>
+                <div className="camera-preview-mock">
+                  <div className="camera-face-outline"></div>
+                  <div className="camera-scanner-line"></div>
                 </div>
-                {renderMarkdown(studyReport)}
               </div>
-            )}
-          </div>
+              <div className="timeline-tracker">
+                <span className="watch-label">Session Timeline</span>
+                {timeline.map((evt, i) => (
+                  <div key={i} className="timeline-event-row">
+                    <span className="timeline-time">{evt.time}</span>
+                    <span className="timeline-msg">{evt.msg}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '2rem 1.5rem', background: '#111', borderRadius: '12px', border: '1px solid #2a2a2a' }}>
+              <Moon size={32} style={{ opacity: 0.25, marginBottom: '0.5rem' }} />
+              <p style={{ fontSize: '0.9rem', fontWeight: 500 }}>Studying Mode Inactive</p>
+              <p style={{ fontSize: '0.75rem', color: '#9ca3af' }}>Start to record audio, speech, and generate a summary.</p>
+            </div>
+          )}
+          {isGeneratingReport && (
+            <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
+              <span className="state-indicator-dot"></span>
+              <p style={{ fontSize: '0.85rem', color: '#9ca3af', marginTop: '0.5rem' }}>Compiling study report...</p>
+            </div>
+          )}
+          {studyReport && (
+            <div style={{ marginTop: '1.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem', fontWeight: 600 }}>
+                <FileText size={16} style={{ color: '#6b7280' }} />
+                <span>Study Session Report</span>
+              </div>
+              {renderMarkdown(studyReport)}
+            </div>
+          )}
         </div>
 
         {/* Emergency Report */}
         {showEmergencyReport && (
           <div className="glass-card" style={{ gridColumn: '1 / -1' }}>
             <div className="card-header-row">
-              <h2 className="card-title"><AlertCircle size={18} /> Emergency Deactivated – Nearest Hospital & Incident Report</h2>
+              <h2 className="card-title"><AlertCircle size={18} /> Emergency Deactivated – Nearest Hospital</h2>
               <button className="glass-button" onClick={() => setShowEmergencyReport(false)}><X size={14} /> Dismiss</button>
             </div>
             <div className="hospital-card">
               <div className="hospital-map-placeholder">
-                <svg className="hospital-map-route" viewBox="0 0 110 85">
+                <svg viewBox="0 0 110 85" className="hospital-map-route">
                   <path d="M10,70 Q30,20 60,30 Q80,40 90,15" stroke="#10b981" strokeWidth="3" fill="none" />
                   <circle cx="10" cy="70" r="5" fill="#ef4444" />
                   <circle cx="90" cy="15" r="5" fill="#10b981" />
                 </svg>
-                <div className="hospital-map-marker" style={{ top: '68px', left: '4px', fontSize: '1rem' }}>You</div>
-                <div className="hospital-map-marker" style={{ top: '10px', left: '80px', fontSize: '1rem' }}>Hospital</div>
+                <div style={{ position: 'absolute', top: '68px', left: '4px', fontSize: '0.7rem', color: '#ef4444' }}>You</div>
+                <div style={{ position: 'absolute', top: '10px', left: '80px', fontSize: '0.7rem', color: '#10b981' }}>Hospital</div>
               </div>
               <div>
-                <div style={{ fontWeight: 600, fontSize: '1rem' }}>City General Hospital</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>123 Health Ave, Downtown</div>
-                <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
-                  <span style={{ fontSize: '0.7rem', background: 'rgba(16,185,129,0.1)', padding: '0.15rem 0.5rem', borderRadius: '4px' }}>
-                    3 min away
-                  </span>
-                  <span style={{ fontSize: '0.7rem', background: 'rgba(16,185,129,0.1)', padding: '0.15rem 0.5rem', borderRadius: '4px' }}>
-                    +1 (555) 123-4567
-                  </span>
+                <div style={{ fontWeight: 600 }}>City General Hospital</div>
+                <div style={{ fontSize: '0.8rem', color: '#9ca3af' }}>123 Health Ave, Downtown</div>
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <span style={{ fontSize: '0.7rem', background: '#1e293b', padding: '0.1rem 0.4rem', borderRadius: '4px' }}>3 min away</span>
+                  <span style={{ fontSize: '0.7rem', background: '#1e293b', padding: '0.1rem 0.4rem', borderRadius: '4px' }}>+1 (555) 123-4567</span>
                 </div>
               </div>
             </div>
             <div className="incident-report-panel">
-              <h3 style={{ fontSize: '0.9rem', marginTop: 0, marginBottom: '0.75rem' }}>Incident Summary</h3>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                <p><strong>Time of event:</strong> {new Date().toLocaleString()}</p>
-                <p><strong>Heart rate:</strong> {heartRate} BPM ({heartRate < 50 ? 'Bradycardia' : heartRate > 120 ? 'Tachycardia' : 'Normal'})</p>
-                <p><strong>Blood oxygen:</strong> {spo2}% ({spo2 < 90 ? 'Hypoxemia' : 'Normal'})</p>
-                <p><strong>Action taken:</strong> Emergency alert was deactivated by user at {new Date().toLocaleTimeString()}. Nearest hospital and incident report displayed.</p>
-                <p><strong>Vbud recommendation:</strong> Please consult a medical professional if symptoms persist.</p>
-                <div style={{ marginTop: '0.5rem', background: 'rgba(255,255,255,0.02)', padding: '0.5rem', borderRadius: '6px' }}>
-                  <strong>Health tips:</strong>
-                  <ul style={{ margin: '0.25rem 0 0 0', paddingLeft: '1rem' }}>
-                    <li>Stay hydrated and rest if feeling unwell.</li>
-                    <li>Monitor your heart rate and oxygen levels regularly.</li>
-                    <li>Seek immediate medical attention if you experience chest pain or shortness of breath.</li>
-                  </ul>
-                </div>
+              <h3 style={{ fontSize: '0.9rem', marginTop: 0 }}>Incident Summary</h3>
+              <div style={{ fontSize: '0.8rem', color: '#9ca3af' }}>
+                <p><strong>Time:</strong> {new Date().toLocaleString()}</p>
+                <p><strong>Heart rate:</strong> {heartRate} BPM</p>
+                <p><strong>Blood oxygen:</strong> {spo2}%</p>
+                <p><strong>Action:</strong> Alert deactivated.</p>
+                <p><strong>Recommendation:</strong> Seek medical help if symptoms persist.</p>
               </div>
             </div>
           </div>
@@ -1379,30 +1048,33 @@ function App() {
       {showSettings && (
         <div className="modal-backdrop">
           <div className="modal-content">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-              <h2 style={{ fontSize: '1.1rem', margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Settings size={16} /> API Key configuration
-              </h2>
-              <button onClick={() => setShowSettings(false)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
-                <X size={18} />
-              </button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+              <h2 style={{ margin: 0 }}>Settings</h2>
+              <button onClick={() => setShowSettings(false)} style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer' }}><X size={18} /></button>
             </div>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '0 0 1.25rem 0', lineHeight: 1.4 }}>
-              Enter your Google Gemini API Key. This will be stored locally in your browser's <code>localStorage</code> to run face vision scan, chat, and session reports.
-            </p>
             <div className="form-group">
-              <label className="form-label">Gemini API Key</label>
+              <label>Gemini API Key</label>
               <input
                 type="password"
-                className="form-input"
                 value={tempKey}
                 onChange={(e) => setTempKey(e.target.value)}
                 placeholder="AIzaSy..."
+                className="form-input"
+              />
+            </div>
+            <div className="form-group">
+              <label>Maintenance Crew Phone</label>
+              <input
+                type="tel"
+                value={tempPhone}
+                onChange={(e) => setTempPhone(e.target.value)}
+                placeholder="+1 555 123 4567"
+                className="form-input"
               />
             </div>
             <div className="modal-actions">
               <button className="glass-button" onClick={() => setShowSettings(false)}>Cancel</button>
-              <button className="glass-button active" onClick={handleSaveSettings}>Save settings</button>
+              <button className="glass-button active" onClick={handleSaveSettings}>Save</button>
             </div>
           </div>
         </div>
