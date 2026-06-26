@@ -1,10 +1,10 @@
-﻿# ✦ vbud ✦
+﻿# vbud
 
 A personal AI-powered study companion that monitors your biometrics, environment, and focus — all from the browser.
 
 ---
 
-## ✴︎ Abilities
+## Abilities
 
 - **Voice Interaction** — Speak directly to Vbud and receive spoken responses powered by the Gemini API. Uses the Web Speech API for microphone input and text-to-speech output.
 - **Face Fatigue Analysis** — Upload a photo and receive an AI-generated assessment of your fatigue level, current mood, and personalized recovery tips.
@@ -15,7 +15,7 @@ A personal AI-powered study companion that monitors your biometrics, environment
 
 ---
 
-## ˖ ݁ Deploy It Yourself
+## Deploy It Yourself
 
 **Prerequisites:** Node.js v18+ and npm installed on your machine.
 
@@ -24,68 +24,43 @@ A personal AI-powered study companion that monitors your biometrics, environment
 git clone https://github.com/mouradgad1/scratch.git
 cd scratch/vbud-app
 ```
+2. Install dependencies
 
-**2. Install dependencies**
 ```bash
 npm install
 ```
+3. Configure your Gemini API key
 
-**3. Configure your Gemini API key**
+Create a .env file inside vbud-app/ with the following:
 
-Create a `.env` file inside `vbud-app/` with the following:
-```
+```text
 VITE_GEMINI_API_KEY=your_api_key_here
 ```
+Alternatively, you can paste the key directly into the Settings panel within the app at runtime — it will be saved to localStorage.
 
-Alternatively, you can paste the key directly into the Settings panel within the app at runtime — it will be saved to `localStorage`.
+4. Start the dev server
 
-**4. Start the dev server**
 ```bash
 npm run dev
 ```
+The app will be available at http://localhost:5173 by default.
 
-The app will be available at `http://localhost:5173` by default.
+5. Build for production (optional)
 
-**5. Build for production** *(optional)*
 ```bash
 npm run build
 ```
-The compiled output will appear in `vbud-app/dist/`.
+The compiled output will appear in vbud-app/dist/.
 
----
+### Requirements
+- Node.js version 18 or higher
 
-## ⋆˙ Requirements
+- npm (comes with Node.js)
 
-### Runtime
-| Requirement | Notes |
-|---|---|
-| Node.js | v18 or higher |
-| npm | Bundled with Node.js |
-| Modern browser | Chrome or Edge recommended — required for Web Speech API support |
-| Gemini API Key | Obtain from [Google AI Studio](https://aistudio.google.com/) |
+- Modern browser (Chrome or Edge recommended — required for Web Speech API support)
 
-### Dependencies
+-Gemini API key — obtain from Google AI Studio
 
-| Package | Version | Purpose |
-|---|---|---|
-| `react` | ^19.2.6 | UI framework |
-| `react-dom` | ^19.2.6 | DOM renderer |
-| `@google/generative-ai` | ^0.24.1 | Gemini API client |
-| `lucide-react` | ^1.21.0 | Icon library |
+The app uses React, Vite, and the Google Generative AI library. All other dependencies are installed automatically via npm install.
 
-### Dev Dependencies
-
-| Package | Version | Purpose |
-|---|---|---|
-| `vite` | ^8.0.12 | Build tool and dev server |
-| `@vitejs/plugin-react` | ^6.0.1 | React + Vite integration |
-| `eslint` | ^10.3.0 | Code linting |
-| `eslint-plugin-react-hooks` | ^7.1.1 | React hooks lint rules |
-| `eslint-plugin-react-refresh` | ^0.5.2 | Fast refresh lint support |
-| `@types/react` | ^19.2.14 | TypeScript types for React |
-| `@types/react-dom` | ^19.2.3 | TypeScript types for ReactDOM |
-| `globals` | ^17.6.0 | Global variable definitions for ESLint |
-
----
-
-*Mourad Gad*
+Mourad Gad
