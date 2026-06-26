@@ -11,7 +11,7 @@ A personal AI-powered study companion that monitors your biometrics, environment
 - **Study Mode** — Track your study session in real time with a live audio waveform, elapsed timer, and timestamped event log. Receive a concise AI-generated report when the session ends.
 - **Biometric Monitoring** — Simulated heart rate and SpO₂ readings fluctuate with your current state. Critical thresholds trigger an automated emergency countdown with a dispatch log.
 - **Telemetry Dashboard** — Live SVG line charts display water flow and gas concentration readings with interactive hover tooltips and anomaly simulation controls.
-- **State-Aware Theming** — The interface shifts its color palette based on the active state: Idle, Studying, Analyzing, or Alerts.
+- **Chatbot (_Vbud_)** — an interactive chat with the user in order to help him with anything.
 
 ---
 
