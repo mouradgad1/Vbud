@@ -18,8 +18,7 @@ Vbud is an interactive, browser-based personal study companion powered by the Ge
 
 - **Frontend Framework** - React (initialized with Vite)
 - **Styling** - Vanilla CSS
-- **AI Integration** - Google Generative AI (Gemini 2.5 Flash model)
-- **Browser APIs** - Web Speech API (Speech Recognition & Speech Synthesis)
+- **AI Integration** - Google Generative AI s
 
 ---
 
@@ -51,7 +50,7 @@ To run this project locally, ensure you have the following installed:
    ```env
    VITE_GEMINI_API_KEY=your_api_key_here
    ```
-   *Note: If you do not configure a `.env` file, you can enter the API key directly in the application's Settings panel during runtime. The key will be saved to your browser's local storage.*
+   *Note: If you do not configure a `.env` file, you can enter the API key directly in the application's Settings panel during runtime. The key will be saved to your browser's session storage and cleared automatically when you close the tab.*
 
 4. **Start the development server:**
    ```bash

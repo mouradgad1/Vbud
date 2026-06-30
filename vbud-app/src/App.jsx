@@ -39,7 +39,7 @@ function App() {
 
   // API Key
   const [apiKey, setApiKey] = useState(() => {
-    return import.meta.env.VITE_GEMINI_API_KEY || localStorage.getItem('vbud_gemini_api_key') || '';
+    return import.meta.env.VITE_GEMINI_API_KEY || sessionStorage.getItem('vbud_gemini_api_key') || '';
   });
   const [showSettings, setShowSettings] = useState(false);
   const [tempKey, setTempKey] = useState(apiKey);
@@ -558,7 +558,7 @@ function App() {
 
   const handleSaveSettings = () => {
     setApiKey(tempKey);
-    localStorage.setItem('vbud_gemini_api_key', tempKey);
+    sessionStorage.setItem('vbud_gemini_api_key', tempKey);
     setMaintenancePhone(tempPhone);
     localStorage.setItem('vbud_maintenance_phone', tempPhone);
     setShowSettings(false);
