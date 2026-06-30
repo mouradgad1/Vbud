@@ -1,66 +1,76 @@
-﻿# vbud
+﻿# VBUD 
 
-A personal AI-powered study companion that monitors your biometrics, environment, and focus — all from the browser.
-
----
-
-## Abilities
-
-- **Voice Interaction** — Speak directly to Vbud and receive spoken responses powered by the Gemini API. Uses the Web Speech API for microphone input and text-to-speech output.
-- **Face Fatigue Analysis** — Upload a photo and receive an AI-generated assessment of your fatigue level, current mood, and personalized recovery tips.
-- **Study Mode** — Track your study session in real time with a live audio waveform, elapsed timer, and timestamped event log. Receive a concise AI-generated report when the session ends.
-- **Biometric Monitoring** — Simulated heart rate and SpO₂ readings fluctuate with your current state. Critical thresholds trigger an automated emergency countdown with a dispatch log.
-- **Telemetry Dashboard** — Live SVG line charts display water flow and gas concentration readings with interactive hover tooltips and anomaly simulation controls.
-- **Chatbot (_Vbud_)** — an interactive chat with the user in order to help him with anything.
+Vbud is an interactive, browser-based personal study companion powered by the Gemini API. It assists users by monitoring study focus, biometrics, environmental telemetry, and facial fatigue, providing live feedback and structured sessions to optimize productivity.
 
 ---
 
-## Deploy It Yourself
+## Features
 
-**Prerequisites:** Node.js v18+ and npm installed on your machine.
+- **Facial Fatigue Analysis** - Photographic assessment of user fatigue levels and emotional state. Users can upload a photo to receive a calculated fatigue score, mood evaluation, and custom wellness recommendations.
+- **Study Session Mode** - Real-time tracking of study sessions featuring a live audio waveform visualizer, elapsed session timer, and dynamic event log. When a session ends, the app generates a summarized AI report of the session.
+- **Biometric Monitoring** - Dynamic simulation of heart rate (BPM) and oxygen saturation (SpO2) levels. The system monitors thresholds and initiates a mock emergency countdown with a dispatch log if critical biometrics are detected.
+- **Telemetry Dashboard** - Live SVG line charts visualizing environmental metrics such as water flow and gas concentration. Includes interactive tooltips and simulation controls to trigger system anomalies.
+- **Context-Aware Chatbot** - Integrated chat interface allowing users to converse with Vbud. The chatbot is context-aware and answers questions specifically based on the current dashboard telemetry and session metrics.
 
-**1. Clone the repository**
-```bash
-git clone https://github.com/mouradgad1/scratch.git
-cd scratch/vbud-app
-```
-2. Install dependencies
+---
 
-```bash
-npm install
-```
-3. Configure your Gemini API key
+## Architecture and Technology Stack
 
-Create a .env file inside vbud-app/ with the following:
+- **Frontend Framework** - React (initialized with Vite)
+- **Styling** - Vanilla CSS
+- **AI Integration** - Google Generative AI (Gemini 2.5 Flash model)
+- **Browser APIs** - Web Speech API (Speech Recognition & Speech Synthesis)
 
-```text
-VITE_GEMINI_API_KEY=your_api_key_here
-```
-Alternatively, you can paste the key directly into the Settings panel within the app at runtime — it will be saved to localStorage.
+---
 
-4. Start the dev server
+## Getting Started
 
-```bash
-npm run dev
-```
-The app will be available at http://localhost:5173 by default.
+### Prerequisites
 
-5. Build for production (optional)
+To run this project locally, ensure you have the following installed:
+- Node.js (version 18 or higher)
+- npm (Node Package Manager)
+- A modern web browser (Google Chrome or Microsoft Edge is recommended for Web Speech API compatibility)
+- A Gemini API Key (obtainable from Google AI Studio)
 
-```bash
-npm run build
-```
-The compiled output will appear in vbud-app/dist/.
+### Installation
 
-### Requirements
-- Node.js version 18 or higher
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/mouradgad1/scratch.git
+   cd scratch/vbud-app
+   ```
 
-- npm (comes with Node.js)
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
 
-- Modern browser (Chrome or Edge recommended — required for Web Speech API support)
+3. **Configure the API Key:**
+   Create a `.env` file in the `vbud-app` directory and add your API key:
+   ```env
+   VITE_GEMINI_API_KEY=your_api_key_here
+   ```
+   *Note: If you do not configure a `.env` file, you can enter the API key directly in the application's Settings panel during runtime. The key will be saved to your browser's local storage.*
 
--Gemini API key — obtain from Google AI Studio
+4. **Start the development server:**
+   ```bash
+   npm run dev
+   ```
+   The application will be accessible at `http://localhost:5173`.
 
-The app uses React, Vite, and the Google Generative AI library. All other dependencies are installed automatically via npm install.
+5. **Build for production (optional):**
+   ```bash
+   npm run build
+   ```
+   The production-ready assets will be generated in the `vbud-app/dist` directory.
 
-Mourad Gad
+---
+
+## Usage Guide
+
+1. **Enter API Key** - Navigate to the Settings panel and ensure a valid Gemini API key is configured.
+2. **Start a Study Session** - Go to the Study Mode section and click the start button. Speak to the companion, view the live waveform, and observe the timeline event log. Click stop to receive an automated AI summary of your session.
+3. **Analyze Fatigue** - Take or upload a photo in the Fatigue Analysis section to get an instantaneous wellness report and advice on study breaks.
+4. **Monitor Telemetry** - Use the Dashboard panel to track simulated environmental and biometric telemetry. Adjust settings to simulate critical thresholds or trigger anomalies.
+5. **Chat with Vbud** - Use the Chat input field to ask Vbud questions about your telemetry data or ask for help with the study session.
